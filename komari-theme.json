@@ -195,6 +195,12 @@
                 "default": true
             },
             {
+                "key": "statusCardsVisibility.costOverview",
+                "type": "bool",
+                "label": "Show cost overview",
+                "default": true
+            },
+            {
                 "key": "statusCardsVisibility.mapView",
                 "type": "bool",
                 "label": "Show map view",
@@ -431,6 +437,15 @@
                 "default": true
             },
             {
+                "key": "statusCardsVisibility.costOverview",
+                "type": "switch",
+                "name": {
+                    "zh-CN": "显示费用概览",
+                    "en-US": "Show Cost Overview"
+                },
+                "default": true
+            },
+            {
                 "key": "statusCardsVisibility.mapView",
                 "type": "switch",
                 "name": {
@@ -662,6 +677,15 @@
                 "name": {
                     "zh-CN": "显示网络速率",
                     "en-US": "Show Network Speed"
+                },
+                "default": true
+            },
+            {
+                "key": "statusCardsVisibility.costOverview",
+                "type": "switch",
+                "name": {
+                    "zh-CN": "显示费用概览",
+                    "en-US": "Show Cost Overview"
                 },
                 "default": true
             },
@@ -905,6 +929,15 @@
                 "default": true
             },
             {
+                "key": "statusCardsVisibility.costOverview",
+                "type": "switch",
+                "name": {
+                    "zh-CN": "显示费用概览",
+                    "en-US": "Show Cost Overview"
+                },
+                "default": true
+            },
+            {
                 "key": "statusCardsVisibility.mapView",
                 "type": "switch",
                 "name": {
@@ -1140,6 +1173,15 @@
                 "name": {
                     "zh-CN": "显示网络速率",
                     "en-US": "Show Network Speed"
+                },
+                "default": true
+            },
+            {
+                "key": "statusCardsVisibility.costOverview",
+                "type": "switch",
+                "name": {
+                    "zh-CN": "显示费用概览",
+                    "en-US": "Show Cost Overview"
                 },
                 "default": true
             },
