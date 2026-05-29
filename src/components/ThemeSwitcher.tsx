@@ -168,6 +168,7 @@ const ThemeSwitcher = () => {
     { key: 'regionOverview', label: t('region_overview') },
     { key: 'trafficOverview', label: t('traffic_overview') },
     { key: 'networkSpeed', label: t('network_speed') },
+    { key: 'costOverview', label: t('cost_overview', { defaultValue: '费用概览' }) },
     { key: 'mapView', label: t('common.map', { defaultValue: 'Map' }) },
   ];
 

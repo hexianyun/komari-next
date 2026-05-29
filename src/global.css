@@ -151,6 +151,55 @@
   }
 }
 
+.dashboard-status-map-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.dashboard-status-card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
+.dashboard-status-map-layout .node-map-view {
+  margin-top: -3rem;
+}
+
+.dashboard-status-map-layout .node-map-view__surface {
+  min-height: 0;
+  height: 18.3rem;
+  border-color: var(--border);
+  background: var(--card);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+}
+
+@media (max-width: 1100px) {
+  .dashboard-status-map-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-status-card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-status-map-layout .node-map-view {
+    margin-top: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .dashboard-status-card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-status-map-layout .node-map-view__surface {
+    height: 15rem;
+  }
+}
+
 body[data-custom-background="true"] {
   position: relative;
   z-index: 0;

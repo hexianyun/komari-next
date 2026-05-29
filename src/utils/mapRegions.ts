@@ -49,15 +49,15 @@ export interface MapViewSummary {
 }
 
 function getRegionStatus(online: number, offline: number): RegionStatus {
-  if (online === 0) {
+  if (offline > 0) {
     return "offline";
   }
 
-  if (offline === 0) {
+  if (online > 0) {
     return "online";
   }
 
-  return "partial";
+  return "offline";
 }
 
 function resolveRegionMetaFromFlagCode(flagCode: string): RegionMeta | null {

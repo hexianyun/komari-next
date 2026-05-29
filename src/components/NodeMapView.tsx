@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, PointerEvent } from "react";
+import type { CSSProperties, PointerEvent, WheelEvent } from "react";
 import { geoGraticule10, geoNaturalEarth1, geoPath } from "d3-geo";
 import { MapPinned } from "lucide-react";
 import { feature } from "topojson-client";
@@ -31,6 +31,30 @@ type HoveredRegion = {
   horizontal: "left" | "right";
   vertical: "above" | "below";
 };
+type HoveredServerPin = {
+  pinKey: string;
+  x: number;
+  y: number;
+  horizontal: "left" | "right";
+  vertical: "above" | "below";
+};
+type MapTransform = {
+  scale: number;
+  x: number;
+  y: number;
+};
+type ServerPin = {
+  key: string;
+  node: NodeBasicInfo;
+  region: MapRegionSummary;
+  city: string;
+  x: number;
+  y: number;
+  online: boolean;
+  cityTotal: number;
+  cityOnline: number;
+  cityOffline: number;
+};
 
 const SVG_WIDTH = 1000;
 const SVG_HEIGHT = 560;
@@ -43,6 +67,47 @@ const HOVER_CARD_GAP = 12;
 const HOVER_CARD_MAX_WIDTH = 320;
 const HOVER_CARD_FALLBACK_HEIGHT = 124;
 const HOVER_CARD_EDGE_PADDING = 8;
+const MAP_ZOOM_MIN = 1;
+const MAP_ZOOM_MAX = 5;
+
+const FALLBACK_CITY_COORDS: Record<string, { city: string; coord: [number, number] }> = {
+  US: { city: "Washington", coord: [-98.58, 39.83] },
+  DE: { city: "Berlin", coord: [10.45, 51.16] },
+  HK: { city: "Hong Kong", coord: [114.17, 22.32] },
+  CH: { city: "Bern", coord: [8.23, 46.82] },
+  IE: { city: "Dublin", coord: [-8.24, 53.41] },
+  SG: { city: "Singapore", coord: [103.82, 1.35] },
+  JP: { city: "Tokyo", coord: [138.25, 36.2] },
+  CN: { city: "Beijing", coord: [104.2, 35.86] },
+  GB: { city: "London", coord: [-3.44, 55.38] },
+  FR: { city: "Paris", coord: [2.21, 46.23] },
+};
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function getNodeCity(node: NodeBasicInfo, flagCode: string) {
+  return (
+    node.city ||
+    node.location_city ||
+    node.locationCity ||
+    node.provider_city ||
+    FALLBACK_CITY_COORDS[flagCode]?.city ||
+    flagCode
+  );
+}
+
+function getNodeLonLat(node: NodeBasicInfo, flagCode: string): [number, number] | null {
+  const lat = Number(node.latitude ?? node.lat);
+  const lon = Number(node.longitude ?? node.lon ?? node.lng);
+
+  if (Number.isFinite(lat) && Number.isFinite(lon)) {
+    return [lon, lat];
+  }
+
+  return FALLBACK_CITY_COORDS[flagCode]?.coord ?? null;
+}
 
 function getStatusText(t: TranslateFn, status: "online" | "offline" | "partial") {
   switch (status) {
@@ -79,15 +144,15 @@ export function NodeMapView({
   const { t } = useTranslation();
   const summary = useMemo(() => buildMapViewSummary(nodes, liveData), [nodes, liveData]);
   const [hoveredRegion, setHoveredRegion] = useState<HoveredRegion | null>(null);
+  const [hoveredServerPin, setHoveredServerPin] = useState<HoveredServerPin | null>(null);
+  const [mapTransform, setMapTransform] = useState<MapTransform>({ scale: 1, x: 0, y: 0 });
+  const dragStateRef = useRef<{ pointerId: number; clientX: number; clientY: number } | null>(null);
   const mapSurfaceRef = useRef<HTMLDivElement | null>(null);
   const hoverCardRef = useRef<HTMLDivElement | null>(null);
   const hoverFrameRef = useRef<number | null>(null);
   const pendingHoverPositionRef = useRef<Omit<HoveredRegion, "regionKey"> | null>(null);
   const hoverRegion =
     summary.regions.find((region) => region.key === hoveredRegion?.regionKey) ?? null;
-  const hoverPosition = hoveredRegion
-    ? pendingHoverPositionRef.current ?? hoveredRegion
-    : null;
 
   const activeRegionsByMapName = useMemo(
     () => new Map(summary.regions.map((region) => [region.mapName, region])),
@@ -144,12 +209,90 @@ export function NodeMapView({
       })
       .filter((country) => country.pathData);
 
+    const regionByKey = new Map(summary.regions.map((region) => [region.key, region]));
+    const onlineSet = new Set(liveData?.online ?? []);
+    const cityStats = new Map<string, { total: number; online: number; offline: number }>();
+    const basePins: Omit<ServerPin, "x" | "y" | "cityTotal" | "cityOnline" | "cityOffline">[] = [];
+
+    for (const node of nodes) {
+      const flagCode = (
+        node.country_code ||
+        node.countryCode ||
+        summary.regions.find((region) => region.nodes.some((item) => item.uuid === node.uuid))?.flagCode ||
+        ""
+      ).toUpperCase();
+      const region = regionByKey.get(flagCode);
+      const coord = region ? getNodeLonLat(node, region.flagCode) : null;
+      const projected = coord ? projection(coord) : null;
+
+      if (!region || !projected || !Number.isFinite(projected[0]) || !Number.isFinite(projected[1])) {
+        continue;
+      }
+
+      const city = getNodeCity(node, region.flagCode);
+      const online = onlineSet.has(node.uuid);
+      const cityKey = `${region.key}|${city}`;
+      const stats = cityStats.get(cityKey) ?? { total: 0, online: 0, offline: 0 };
+      stats.total += 1;
+      if (online) {
+        stats.online += 1;
+      } else {
+        stats.offline += 1;
+      }
+      cityStats.set(cityKey, stats);
+
+      basePins.push({
+        key: node.uuid,
+        node,
+        region,
+        city,
+        online,
+      });
+    }
+
+    const cityIndex = new Map<string, number>();
+    const serverPins = basePins.map((pin) => {
+      const cityKey = `${pin.region.key}|${pin.city}`;
+      const stats = cityStats.get(cityKey) ?? { total: 1, online: pin.online ? 1 : 0, offline: pin.online ? 0 : 1 };
+      const index = cityIndex.get(cityKey) ?? 0;
+      cityIndex.set(cityKey, index + 1);
+      const coord = getNodeLonLat(pin.node, pin.region.flagCode);
+      const projected = coord ? projection(coord) : [0, 0];
+      let x = projected?.[0] ?? 0;
+      let y = projected?.[1] ?? 0;
+
+      if (stats.total > 1) {
+        const angle = (Math.PI * 2 * index) / stats.total;
+        const radius = Math.min(18, 5 + stats.total * 1.6);
+        x += Math.cos(angle) * radius;
+        y += Math.sin(angle) * radius;
+      }
+
+      return {
+        ...pin,
+        x,
+        y,
+        cityTotal: stats.total,
+        cityOnline: stats.online,
+        cityOffline: stats.offline,
+      };
+    });
+
     return {
       spherePath,
       graticulePath,
       countries,
+      serverPins,
     };
-  }, [activeRegionsByMapName]);
+  }, [activeRegionsByMapName, liveData?.online, nodes, summary.regions]);
+  const hoverServerPin = hoveredServerPin
+    ? projectedMap.serverPins.find((pin) => pin.key === hoveredServerPin.pinKey) ?? null
+    : null;
+  const hoverPosition = hoveredServerPin
+    ? pendingHoverPositionRef.current ?? hoveredServerPin
+    : hoveredRegion
+      ? pendingHoverPositionRef.current ?? hoveredRegion
+      : null;
 
   const getHoverPosition = useCallback((event: PointerEvent<SVGElement>) => {
     const surfaceRect = mapSurfaceRef.current?.getBoundingClientRect();
@@ -211,8 +354,23 @@ export function NodeMapView({
     (event: PointerEvent<SVGElement>, region: MapRegionSummary) => {
       const position = getHoverPosition(event);
 
+      setHoveredServerPin(null);
       setHoveredRegion({
         regionKey: region.key,
+        ...position,
+      });
+      queueHoverPosition(position);
+    },
+    [getHoverPosition, queueHoverPosition],
+  );
+
+  const updateHoveredServerPin = useCallback(
+    (event: PointerEvent<SVGElement>, pin: ServerPin) => {
+      const position = getHoverPosition(event);
+
+      setHoveredRegion(null);
+      setHoveredServerPin({
+        pinKey: pin.key,
         ...position,
       });
       queueHoverPosition(position);
@@ -229,12 +387,107 @@ export function NodeMapView({
 
   const clearHoveredRegion = useCallback(() => {
     setHoveredRegion(null);
+    setHoveredServerPin(null);
     pendingHoverPositionRef.current = null;
 
     if (hoverFrameRef.current !== null) {
       window.cancelAnimationFrame(hoverFrameRef.current);
       hoverFrameRef.current = null;
     }
+  }, []);
+
+  const clampMapTransform = useCallback((transform: MapTransform) => {
+    const scale = clamp(transform.scale, MAP_ZOOM_MIN, MAP_ZOOM_MAX);
+    if (scale <= MAP_ZOOM_MIN) {
+      return { scale: MAP_ZOOM_MIN, x: 0, y: 0 };
+    }
+
+    const maxX = SVG_WIDTH * (scale - 1);
+    const maxY = SVG_HEIGHT * (scale - 1);
+
+    return {
+      scale,
+      x: clamp(transform.x, -maxX, 0),
+      y: clamp(transform.y, -maxY, 0),
+    };
+  }, []);
+
+  const handleMapWheel = useCallback(
+    (event: WheelEvent<SVGSVGElement>) => {
+      event.preventDefault();
+      const rect = event.currentTarget.getBoundingClientRect();
+      const pointX = ((event.clientX - rect.left) / rect.width) * SVG_WIDTH;
+      const pointY = ((event.clientY - rect.top) / rect.height) * SVG_HEIGHT;
+
+      setMapTransform((current) => {
+        const nextScale = clamp(
+          current.scale * (event.deltaY < 0 ? 1.18 : 0.85),
+          MAP_ZOOM_MIN,
+          MAP_ZOOM_MAX,
+        );
+        if (nextScale === current.scale) {
+          return current;
+        }
+
+        return clampMapTransform({
+          scale: nextScale,
+          x: pointX - (pointX - current.x) * (nextScale / current.scale),
+          y: pointY - (pointY - current.y) * (nextScale / current.scale),
+        });
+      });
+    },
+    [clampMapTransform],
+  );
+
+  const handleMapPointerDown = useCallback(
+    (event: PointerEvent<SVGSVGElement>) => {
+      if (mapTransform.scale <= MAP_ZOOM_MIN) {
+        return;
+      }
+
+      dragStateRef.current = {
+        pointerId: event.pointerId,
+        clientX: event.clientX,
+        clientY: event.clientY,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    },
+    [mapTransform.scale],
+  );
+
+  const handleMapPointerMove = useCallback(
+    (event: PointerEvent<SVGSVGElement>) => {
+      const dragState = dragStateRef.current;
+      if (!dragState || dragState.pointerId !== event.pointerId) {
+        return;
+      }
+
+      const rect = event.currentTarget.getBoundingClientRect();
+      const deltaX = ((event.clientX - dragState.clientX) / rect.width) * SVG_WIDTH;
+      const deltaY = ((event.clientY - dragState.clientY) / rect.height) * SVG_HEIGHT;
+      dragState.clientX = event.clientX;
+      dragState.clientY = event.clientY;
+
+      setMapTransform((current) =>
+        clampMapTransform({
+          ...current,
+          x: current.x + deltaX,
+          y: current.y + deltaY,
+        }),
+      );
+    },
+    [clampMapTransform],
+  );
+
+  const handleMapPointerEnd = useCallback((event: PointerEvent<SVGSVGElement>) => {
+    if (dragStateRef.current?.pointerId === event.pointerId) {
+      dragStateRef.current = null;
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, []);
+
+  const resetMapTransform = useCallback(() => {
+    setMapTransform({ scale: MAP_ZOOM_MIN, x: 0, y: 0 });
   }, []);
 
   useEffect(() => {
@@ -327,91 +580,79 @@ export function NodeMapView({
           <div ref={mapSurfaceRef} className="node-map-view__surface">
             <svg
               viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`}
-              className="node-map-view__svg"
+              className={`node-map-view__svg${dragStateRef.current ? " is-dragging" : ""}`}
               role="img"
               aria-label={t("mapView.ariaLabel", { defaultValue: "Global node distribution map" })}
+              onWheel={handleMapWheel}
+              onPointerDown={handleMapPointerDown}
+              onPointerMove={handleMapPointerMove}
+              onPointerUp={handleMapPointerEnd}
+              onPointerCancel={handleMapPointerEnd}
+              onDoubleClick={resetMapTransform}
             >
-              <path d={projectedMap.spherePath} className="node-map-view__ocean" />
-              <path d={projectedMap.graticulePath} className="node-map-view__graticule" />
+              <g
+                className="node-map-view__viewport"
+                transform={`translate(${mapTransform.x} ${mapTransform.y}) scale(${mapTransform.scale})`}
+              >
+                <path d={projectedMap.spherePath} className="node-map-view__ocean" />
+                <path d={projectedMap.graticulePath} className="node-map-view__graticule" />
 
-              <g className="node-map-view__country-layer">
-                {projectedMap.countries.map((country) => {
-                  const region = country.activeRegion;
-                  const isSelected = hoveredRegion?.regionKey === region?.key;
-                  const ariaLabel = region
-                    ? t("mapView.countrySummary", {
-                        name: region.label,
-                        total: region.total,
-                        online: region.online,
-                        offline: region.offline,
-                        defaultValue:
-                          "{{name}}: {{total}} nodes, {{online}} online, {{offline}} offline",
-                      })
-                    : country.name;
-
-                  return (
-                    <g key={country.name} className="node-map-view__country-group">
-                      <path
-                        d={country.pathData}
-                        data-country-code={region?.flagCode}
-                        data-country-name={country.name}
-                        className={`node-map-view__country${region ? ` is-active status-${region.status}` : ""}${isSelected ? " is-selected" : ""}`}
-                        aria-label={ariaLabel}
-                        onPointerEnter={region ? (event) => updateHoveredRegion(event, region) : undefined}
-                        onPointerMove={region ? updateHoverPosition : undefined}
-                        onPointerLeave={region ? clearHoveredRegion : undefined}
-                      />
-                    </g>
-                  );
-                })}
-              </g>
-
-              <g className="node-map-view__marker-layer">
-                {projectedMap.countries
-                  .filter((country) => country.activeRegion && country.marker)
-                  .map((country) => {
+                <g className="node-map-view__country-layer">
+                  {projectedMap.countries.map((country) => {
                     const region = country.activeRegion;
-                    const marker = country.marker;
-                    if (!region || !marker) {
-                      return null;
-                    }
-
-                    const isSelected = hoveredRegion?.regionKey === region.key;
-                    const ariaLabel = t("mapView.countrySummary", {
-                      name: region.label,
-                      total: region.total,
-                      online: region.online,
-                      offline: region.offline,
-                      defaultValue:
-                        "{{name}}: {{total}} nodes, {{online}} online, {{offline}} offline",
-                    });
+                    const isSelected = hoveredRegion?.regionKey === region?.key;
+                    const ariaLabel = region
+                      ? t("mapView.countrySummary", {
+                          name: region.label,
+                          total: region.total,
+                          online: region.online,
+                          offline: region.offline,
+                          defaultValue:
+                            "{{name}}: {{total}} nodes, {{online}} online, {{offline}} offline",
+                        })
+                      : country.name;
 
                     return (
-                      <g
-                        key={`${country.name}-marker`}
-                        className={`node-map-view__marker status-${region.status}${isSelected ? " is-selected" : ""}`}
-                        data-country-code={region.flagCode}
-                        data-country-name={country.name}
-                        aria-label={ariaLabel}
-                        onPointerEnter={(event) => updateHoveredRegion(event, region)}
-                        onPointerMove={updateHoverPosition}
-                        onPointerLeave={clearHoveredRegion}
-                      >
-                        <circle
-                          cx={marker.x}
-                          cy={marker.y}
-                          r="9"
-                          className="node-map-view__marker-halo"
-                        />
-                        <circle
-                          cx={marker.x}
-                          cy={marker.y}
-                          r="4.2"
-                          className="node-map-view__marker-dot"
+                      <g key={country.name} className="node-map-view__country-group">
+                        <path
+                          d={country.pathData}
+                          data-country-code={region?.flagCode}
+                          data-country-name={country.name}
+                          className={`node-map-view__country${region ? ` is-active status-${region.status}` : ""}${isSelected ? " is-selected" : ""}`}
+                          aria-label={ariaLabel}
+                          onPointerEnter={region ? (event) => updateHoveredRegion(event, region) : undefined}
+                          onPointerMove={region ? updateHoverPosition : undefined}
+                          onPointerLeave={region ? clearHoveredRegion : undefined}
                         />
                       </g>
                     );
                   })}
+                </g>
+
+                <g className="node-map-view__marker-layer">
+                  {projectedMap.serverPins.map((pin) => {
+                    const isSelected = hoveredServerPin?.pinKey === pin.key;
+                    const ariaLabel = `${pin.node.name}: ${pin.city}, ${pin.online ? "online" : "offline"}`;
+
+                    return (
+                      <g
+                        key={pin.key}
+                        className={`node-map-view__server-pin status-${pin.online ? "online" : "offline"}${isSelected ? " is-selected" : ""}`}
+                        transform={`translate(${pin.x} ${pin.y})`}
+                        aria-label={ariaLabel}
+                        onPointerEnter={(event) => updateHoveredServerPin(event, pin)}
+                        onPointerMove={updateHoverPosition}
+                        onPointerLeave={clearHoveredRegion}
+                      >
+                        <path
+                          className="node-map-view__server-pin-shape"
+                          d="M0 -18a7 7 0 0 0-7 7C-7 -5 0 6 0 6S7 -5 7 -11a7 7 0 0 0-7-7Z"
+                        />
+                        <circle className="node-map-view__server-pin-dot" cy="-11" r="2.2" />
+                      </g>
+                    );
+                  })}
+                </g>
               </g>
             </svg>
 
@@ -420,15 +661,15 @@ export function NodeMapView({
                 <div className="node-map-view__legend-items node-map-view__legend-items--stacked">
                   <span className="node-map-view__legend-item">
                     <span className="node-map-view__legend-dot status-online" />
-                    {t("mapView.legend.online", { defaultValue: "Fully online" })}
-                  </span>
-                  <span className="node-map-view__legend-item">
-                    <span className="node-map-view__legend-dot status-partial" />
-                    {t("mapView.legend.partial", { defaultValue: "Partially online" })}
+                    {t("mapView.legend.online", { defaultValue: "服务器在线" })}
                   </span>
                   <span className="node-map-view__legend-item">
                     <span className="node-map-view__legend-dot status-offline" />
-                    {t("mapView.legend.offline", { defaultValue: "Fully offline" })}
+                    {t("mapView.legend.offline", { defaultValue: "服务器离线" })}
+                  </span>
+                  <span className="node-map-view__legend-item">
+                    <span className="node-map-view__legend-dot status-pin" />
+                    {t("mapView.legend.pin", { defaultValue: "服务器所在城市" })}
                   </span>
                 </div>
               </div>
@@ -463,7 +704,7 @@ export function NodeMapView({
               )}
             </div>
 
-            {hoverRegion && hoverPosition && (
+            {(hoverRegion || hoverServerPin) && hoverPosition && (
               <div
                 ref={hoverCardRef}
                 className="node-map-view__hover-card"
@@ -474,7 +715,55 @@ export function NodeMapView({
                   "--node-map-hover-y": `${hoverPosition.y}px`,
                 } as CSSProperties}
               >
-                <div className="node-map-view__detail-header node-map-view__hover-header">
+                {hoverServerPin ? (
+                  <div className="node-map-view__detail-header node-map-view__hover-header">
+                    <div className="node-map-view__detail-heading">
+                      <span className="node-map-view__detail-flag" aria-hidden="true">
+                        <Flag flag={hoverServerPin.region.emoji} />
+                      </span>
+                      <div className="min-w-0 space-y-1">
+                        <div className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                          {hoverServerPin.region.flagCode}
+                        </div>
+                        <h3 className="truncate text-lg font-semibold tracking-tight text-foreground">
+                          {hoverServerPin.region.label}
+                        </h3>
+                        <div className="node-map-view__hover-count-line">
+                          <span className="node-map-view__hover-count-total">
+                            {hoverServerPin.node.name}
+                          </span>
+                          <span className="text-muted-foreground">
+                            {hoverServerPin.city}
+                          </span>
+                        </div>
+                        <div className="node-map-view__hover-count-line">
+                          <span className="node-map-view__hover-count-total">
+                            {hoverServerPin.cityTotal}
+                            <span>{t("mapView.stats.nodes", { defaultValue: "Nodes" })}</span>
+                          </span>
+                          <span className="node-map-view__hover-status-counts">
+                            <span className="node-map-view__hover-count node-map-view__hover-count--online">
+                              {hoverServerPin.cityOnline} {t("nodeCard.online", { defaultValue: "Online" })}
+                            </span>
+                            <span className="node-map-view__hover-count node-map-view__hover-count--offline">
+                              {hoverServerPin.cityOffline} {t("nodeCard.offline", { defaultValue: "Offline" })}
+                            </span>
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <Badge
+                      variant="secondary"
+                      className={`shrink-0 whitespace-nowrap rounded-full ${getRegionStatusBadgeClass(hoverServerPin.online ? "online" : "offline")}`}
+                    >
+                      {hoverServerPin.online
+                        ? t("nodeCard.online", { defaultValue: "Online" })
+                        : t("nodeCard.offline", { defaultValue: "Offline" })}
+                    </Badge>
+                  </div>
+                ) : hoverRegion ? (
+                  <div className="node-map-view__detail-header node-map-view__hover-header">
                   <div className="node-map-view__detail-heading">
                     <span className="node-map-view__detail-flag" aria-hidden="true">
                       <Flag flag={hoverRegion.emoji} />
@@ -509,7 +798,8 @@ export function NodeMapView({
                   >
                     {getStatusText(t, hoverRegion.status)}
                   </Badge>
-                </div>
+                  </div>
+                ) : null}
               </div>
             )}
           </div>

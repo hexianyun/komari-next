@@ -56,6 +56,19 @@ export type NodeBasicInfo = {
   updated_at: string;
   ipv4?: string; 
   ipv6?: string;
+  country_code?: string;
+  countryCode?: string;
+  country?: string;
+  country_name?: string;
+  city?: string;
+  location_city?: string;
+  locationCity?: string;
+  provider_city?: string;
+  latitude?: number | string;
+  lat?: number | string;
+  longitude?: number | string;
+  lon?: number | string;
+  lng?: number | string;
 };
 
 interface NodeListContextType {

@@ -48,6 +48,7 @@ export type StatusCardsVisibility = {
   regionOverview: boolean;
   trafficOverview: boolean;
   networkSpeed: boolean;
+  costOverview: boolean;
   mapView: boolean;
 };
 
@@ -155,6 +156,7 @@ export const DEFAULT_STATUS_CARDS_VISIBILITY: StatusCardsVisibility = {
   regionOverview: true,
   trafficOverview: true,
   networkSpeed: true,
+  costOverview: true,
   mapView: true,
 };
 

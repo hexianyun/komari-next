@@ -1,8 +1,8 @@
 "use client";
 
-import React, { Suspense, useEffect } from "react";
+import React, { Suspense, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Clock, Globe, Activity, ArrowUpRight, Zap } from "lucide-react";
+import { Clock, Globe, Activity, ArrowUpRight, Zap, WalletCards } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -17,6 +17,8 @@ import { CurrentTimeCard } from "@/components/CurrentTimeCard";
 import { Callouts } from "@/components/DashboardCallouts";
 import { NodeMapView } from "@/components/NodeMapView";
 import { useStatusCardsVisibility } from "@/hooks/useStatusCardsVisibility";
+import { convertAmount, loadRates, type LoadedRates } from "@/lib/exchangeRates";
+import { buildRemainingValueSnapshot } from "@/lib/remainingValue";
 
 // Intelligent speed formatting function
 const formatSpeed = (bytes: number): string => {
@@ -114,6 +116,60 @@ const renderSpeedStatusValue = ({
     downBytes={down}
   />
 );
+
+function CostOverviewValue({ nodes }: { nodes: ReturnType<typeof useNodeList>["nodeList"] }) {
+  const [ratesState, setRatesState] = useState<LoadedRates | null>(null);
+  const snapshot = useMemo(() => buildRemainingValueSnapshot(nodes ?? []), [nodes]);
+  const sourceCurrencies = useMemo(
+    () => Array.from(new Set(snapshot.active.map((item) => item.currencyCode))),
+    [snapshot.active],
+  );
+
+  useEffect(() => {
+    if (!sourceCurrencies.length) {
+      return;
+    }
+
+    let cancelled = false;
+    loadRates({ displayCurrency: "CNY", sourceCurrencies })
+      .then((loaded) => {
+        if (!cancelled) {
+          setRatesState(loaded);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setRatesState(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceCurrencies]);
+
+  const monthly = snapshot.active.reduce((total, item) => {
+    const converted = ratesState
+      ? convertAmount(item.monthlyCostOriginal, item.currencyCode, "CNY", ratesState.rates)
+      : null;
+    return total + (converted ?? 0);
+  }, 0);
+  const yearly = monthly * 12;
+  const formatCost = (value: number) => (ratesState ? value.toFixed(2) : "--");
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div>
+        月 / <span className="text-xs font-semibold text-muted-foreground">CNY</span>{" "}
+        {formatCost(monthly)}
+      </div>
+      <div>
+        年 / <span className="text-xs font-semibold text-muted-foreground">CNY</span>{" "}
+        {formatCost(yearly)}
+      </div>
+    </div>
+  );
+}
 
 export default function DashboardContent() {
   const [t] = useTranslation();
@@ -243,6 +299,13 @@ export default function DashboardContent() {
       },
       visible: statusCardsVisibility.networkSpeed,
     },
+    {
+      key: "costOverview",
+      title: t("cost_overview", { defaultValue: "费用概览" }),
+      icon: <WalletCards className="h-4 w-4 text-muted-foreground" />,
+      renderValue: () => <CostOverviewValue nodes={nodeList} />,
+      visible: statusCardsVisibility.costOverview,
+    },
   ];
 
   useEffect(() => {
@@ -269,34 +332,30 @@ export default function DashboardContent() {
           <h2 className="text-2xl font-bold tracking-tight">{t("common.dashboard", { defaultValue: "Dashboard" })}</h2>
         </div>
 
-        <div className={`grid ${
-          themeConfig.cardLayout === 'classic' ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3 sm:gap-4' :
-          themeConfig.cardLayout === 'modern' ? 'grid-cols-1 gap-3 md:grid-cols-2 md:auto-rows-[96px] xl:grid-cols-3' :
-          themeConfig.cardLayout === 'minimal' ? 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3' :
-          themeConfig.cardLayout === 'detailed' ? 'grid-cols-1 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4' :
-          'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3 sm:gap-4'
-        }`}>
-          {statusCards
-            .filter((card) => card.visible)
-            .map((card) => (
-              <TopCard
-                key={card.key}
-                title={card.title}
-                value={card.renderValue ? card.renderValue() : card.getValue?.()}
-                icon={card.icon}
-                layout={themeConfig.cardLayout}
-                structuredValue={card.structuredValue}
-              />
-            ))}
-        </div>
+        <div className="dashboard-status-map-layout">
+          <div className="dashboard-status-card-grid">
+            {statusCards
+              .filter((card) => card.visible)
+              .map((card) => (
+                <TopCard
+                  key={card.key}
+                  title={card.title}
+                  value={card.renderValue ? card.renderValue() : card.getValue?.()}
+                  icon={card.icon}
+                  layout={themeConfig.cardLayout}
+                  structuredValue={card.structuredValue}
+                />
+              ))}
+          </div>
 
-        {statusCardsVisibility.mapView && (
-          <NodeMapView
-            nodes={nodeList ?? []}
-            liveData={live_data?.data ?? { online: [], data: {} }}
-            mapOnly
-          />
-        )}
+          {statusCardsVisibility.mapView && (
+            <NodeMapView
+              nodes={nodeList ?? []}
+              liveData={live_data?.data ?? { online: [], data: {} }}
+              mapOnly
+            />
+          )}
+        </div>
       </div>
 
       <Suspense fallback={<div className="p-4">{t("nodes.loading", { defaultValue: "Loading nodes..." })}</div>}>
