@@ -2,9 +2,9 @@
     "name": "xianyun",
     "short": "xianyun",
     "description": "NextJS theme for Komari Monitor",
-    "version": "1.4.10",
-    "author": "tonyliuzj",
-    "url": "https://github.com/tonyliuzj/komari-next",
+    "version": "1.0.0",
+    "author": "hexianyun",
+    "url": "https://github.com/hexianyun/komari-next",
     "preview": "preview.png",
     "configuration": {
         "name": "Theme Settings",
